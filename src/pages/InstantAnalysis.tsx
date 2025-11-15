@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   AlertTriangle,
   CheckCircle,
@@ -20,7 +21,8 @@ import {
   Upload,
   Zap,
   X,
-  Download
+  Download,
+  List
 } from "lucide-react";
 import { CodeAnalysisEngine } from "@/features/analysis/services";
 import { api } from "@/shared/config/database";
@@ -56,8 +58,11 @@ export default function InstantAnalysis() {
   const [result, setResult] = useState<CodeAnalysisResult | null>(null);
   const [analysisTime, setAnalysisTime] = useState(0);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("all"); // 当前选中的 tab
+  const [activeIssueId, setActiveIssueId] = useState<string | null>(null); // 当前高亮的问题
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadingCardRef = useRef<HTMLDivElement>(null);
+  const issueRefs = useRef<Record<string, HTMLDivElement | null>>({}); // 存储问题元素的引用
 
   const supportedLanguages = CodeAnalysisEngine.getSupportedLanguages();
 
@@ -337,7 +342,55 @@ class UserManager {
     setLanguage("");
     setResult(null);
     setAnalysisTime(0);
+    setActiveTab("all");
+    setActiveIssueId(null);
+    issueRefs.current = {};
   };
+
+  // 根据当前 tab 获取筛选后的问题列表
+  const getFilteredIssues = () => {
+    if (!result) return [];
+    if (activeTab === "all") return result.issues;
+    return result.issues.filter(issue => issue.severity === activeTab);
+  };
+
+  // 滚动到指定问题
+  const scrollToIssue = (issueId: string) => {
+    const element = issueRefs.current[issueId];
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setActiveIssueId(issueId);
+    }
+  };
+
+  // 监听问题元素的可见性，更新当前高亮的问题
+  useEffect(() => {
+    if (!result) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && entry.intersectionRatio > 0.5) {
+            const issueId = entry.target.getAttribute('data-issue-id');
+            if (issueId) {
+              setActiveIssueId(issueId);
+            }
+          }
+        });
+      },
+      {
+        threshold: 0.5,
+        rootMargin: '-20% 0px -20% 0px'
+      }
+    );
+
+    // 观察所有问题元素
+    Object.values(issueRefs.current).forEach((ref) => {
+      if (ref) observer.observe(ref);
+    });
+
+    return () => observer.disconnect();
+  }, [result, activeTab]);
 
   // 构造临时任务和问题数据用于导出
   const getTempTaskAndIssues = () => {
@@ -398,8 +451,15 @@ class UserManager {
   };
 
   // 渲染问题的函数，使用紧凑样式
-  const renderIssue = (issue: any, index: number) => (
-    <div key={index} className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md hover:border-gray-300 transition-all duration-200 group">
+  const renderIssue = (issue: any, index: number) => {
+    const issueId = `issue-${activeTab}-${index}`;
+    return (
+    <div 
+      key={index} 
+      ref={(el) => { issueRefs.current[issueId] = el; }}
+      data-issue-id={issueId}
+      className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md hover:border-gray-300 transition-all duration-200 group scroll-mt-24"
+    >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-start space-x-3">
           <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${issue.severity === 'critical' ? 'bg-red-100 text-red-600' :
@@ -535,7 +595,8 @@ class UserManager {
         })()}
       </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -800,7 +861,7 @@ class UserManager {
             </CardHeader>
             <CardContent>
               {result.issues.length > 0 ? (
-                <Tabs defaultValue="all" className="w-full">
+                <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
                   <TabsList className="grid w-full grid-cols-4 mb-4">
                     <TabsTrigger value="all" className="text-xs">
                       全部 ({result.issues.length})
@@ -816,27 +877,102 @@ class UserManager {
                     </TabsTrigger>
                   </TabsList>
 
-                  <TabsContent value="all" className="space-y-3 mt-4">
-                    {result.issues.map((issue, index) => renderIssue(issue, index))}
-                  </TabsContent>
+                  {/* 双栏布局：左侧大纲 + 右侧问题详情 */}
+                  <div className="flex gap-6">
+                    {/* 左侧大纲 - 桌面端显示 */}
+                    <div className="hidden lg:block w-80 flex-shrink-0">
+                      <div className="sticky top-4">
+                        <Card className="border-gray-200">
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-sm flex items-center">
+                              <List className="w-4 h-4 mr-2" />
+                              问题大纲
+                            </CardTitle>
+                          </CardHeader>
+                          <CardContent className="p-0">
+                            <ScrollArea className="h-[600px]">
+                              <div className="space-y-1 px-4 pb-4">
+                                {getFilteredIssues().length > 0 ? (
+                                  getFilteredIssues().map((issue, index) => {
+                                    const issueId = `issue-${activeTab}-${index}`;
+                                    const isActive = activeIssueId === issueId;
+                                    return (
+                                      <div
+                                        key={index}
+                                        onClick={() => scrollToIssue(issueId)}
+                                        className={`
+                                          group cursor-pointer rounded-lg p-2 transition-all duration-200
+                                          ${isActive 
+                                            ? 'bg-primary/10 border-l-2 border-primary' 
+                                            : 'hover:bg-gray-50 border-l-2 border-transparent'
+                                          }
+                                        `}
+                                      >
+                                        <div className="flex items-start space-x-2">
+                                          <div className={`
+                                            w-6 h-6 rounded flex items-center justify-center flex-shrink-0 text-xs font-medium
+                                            ${issue.severity === 'critical' ? 'bg-red-100 text-red-700' :
+                                              issue.severity === 'high' ? 'bg-orange-100 text-orange-700' :
+                                                issue.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                                                  'bg-blue-100 text-blue-700'
+                                            }
+                                          `}>
+                                            {index + 1}
+                                          </div>
+                                          <div className="flex-1 min-w-0">
+                                            <p className={`
+                                              text-xs leading-tight line-clamp-2 mb-1 overflow-hidden
+                                              ${isActive ? 'font-semibold text-gray-900' : 'text-gray-700 group-hover:text-gray-900'}
+                                            `}
+                                            title={issue.title}
+                                            >
+                                              {issue.title}
+                                            </p>
+                                            <p className="text-xs text-gray-500 truncate" title={`第 ${issue.line} 行`}>
+                                              第 {issue.line} 行
+                                            </p>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })
+                                ) : (
+                                  <div className="text-center py-8 text-gray-500 text-xs">
+                                    暂无问题
+                                  </div>
+                                )}
+                              </div>
+                            </ScrollArea>
+                          </CardContent>
+                        </Card>
+                      </div>
+                    </div>
 
-                  {['critical', 'high', 'medium'].map(severity => (
-                    <TabsContent key={severity} value={severity} className="space-y-3 mt-4">
-                      {result.issues.filter(issue => issue.severity === severity).length > 0 ? (
-                        result.issues.filter(issue => issue.severity === severity).map((issue, index) => renderIssue(issue, index))
-                      ) : (
-                        <div className="text-center py-12">
-                          <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
-                          <h3 className="text-lg font-medium text-gray-900 mb-2">
-                            没有发现{severity === 'critical' ? '严重' : severity === 'high' ? '高优先级' : '中等优先级'}问题
-                          </h3>
-                          <p className="text-gray-500">
-                            代码在此级别的检查中表现良好
-                          </p>
-                        </div>
-                      )}
-                    </TabsContent>
-                  ))}
+                    {/* 右侧问题详情 */}
+                    <div className="flex-1 min-w-0">
+                      <TabsContent value="all" className="space-y-3 mt-0">
+                        {result.issues.map((issue, index) => renderIssue(issue, index))}
+                      </TabsContent>
+
+                      {['critical', 'high', 'medium'].map(severity => (
+                        <TabsContent key={severity} value={severity} className="space-y-3 mt-0">
+                          {result.issues.filter(issue => issue.severity === severity).length > 0 ? (
+                            result.issues.filter(issue => issue.severity === severity).map((issue, index) => renderIssue(issue, index))
+                          ) : (
+                            <div className="text-center py-12">
+                              <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
+                              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                                没有发现{severity === 'critical' ? '严重' : severity === 'high' ? '高优先级' : '中等优先级'}问题
+                              </h3>
+                              <p className="text-gray-500">
+                                代码在此级别的检查中表现良好
+                              </p>
+                            </div>
+                          )}
+                        </TabsContent>
+                      ))}
+                    </div>
+                  </div>
                 </Tabs>
 
 
